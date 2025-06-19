@@ -1,18 +1,38 @@
 import logging
 import re
-from telegram import Update
+import os
+import sys
+from telegram import Update, Bot
+from telegram.error import Conflict
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
 from PIL import Image
 import pytesseract
 import io
 
+
 # SOLO PARA WINDOWS: Descomenta la siguiente línea si usas Windows
 #pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
-TOKEN = "7894095577:AAFH9VOmINKWsv_Z57tcgVrhHw--Y4pLovU"
+# Obtener el token de una variable de entorno
+TOKEN = os.environ.get("TOKEN", "7894095577:AAFH9VOmINKWsv_Z57tcgVrhHw--Y4pLovU")
 
 # Variable para almacenar el ID del grupo destino
 TARGET_GROUP_ID = -1002565451607
+
+# ----- SOLUCIÓN PARA CONFLICTOS -----
+def clear_webhook(token):
+    try:
+        bot = Bot(token=token)
+        bot.delete_webhook(drop_pending_updates=True)
+        logging.info("✅ Webhook eliminado y actualizaciones pendientes descartadas")
+    except Exception as e:
+        logging.error(f"⚠️ Error al eliminar webhook: {e}")
+
+def handle_conflict(update, context):
+    if isinstance(context.error, Conflict):
+        logging.critical("🔴 CONFLICTO: Otra instancia del bot está ejecutándose. Cerrando...")
+        sys.exit(1)
+# -----------------------------------
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -122,11 +142,17 @@ async def set_target_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def main():
+    # 1. Eliminar webhooks previos
+    clear_webhook(TOKEN)
+    
     # Configurar logging
     logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
     
     # Crear la aplicación
     application = Application.builder().token(TOKEN).build()
+    
+    # 4. Manejador de errores para conflictos
+    application.add_error_handler(handle_conflict)
     
     # Manejador para imágenes
     application.add_handler(MessageHandler(filters.PHOTO, handle_image))
@@ -135,6 +161,7 @@ def main():
     application.add_handler(CommandHandler("setgroup", set_target_group))
     
     # Iniciar el bot en modo polling
+    logging.info("Bot iniciado...")
     application.run_polling()
 
 if __name__ == "__main__":

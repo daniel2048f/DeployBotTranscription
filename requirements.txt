@@ -26,6 +26,7 @@ mdurl==0.1.2
 multidict==6.5.0
 packaging==25.0
 pillow==11.2.1
+Pillow==10.3.0
 propcache==0.3.2
 pydantic==2.11.4
 pydantic_core==2.33.2
@@ -34,9 +35,11 @@ PyJWT==2.10.1
 pymodbus==2.5.3
 pyserial==3.5
 pytesseract==0.3.13
+pytesseract==0.3.10
 python-dotenv==1.1.0
 python-multipart==0.0.20
 python-telegram-bot==22.1
+python-telegram-bot==20.3
 PyYAML==6.0.2
 requests==2.32.4
 rich==14.0.0
