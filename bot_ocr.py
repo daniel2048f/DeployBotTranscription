@@ -7,7 +7,7 @@ import pytesseract
 import io
 
 # SOLO PARA WINDOWS: Descomenta la siguiente línea si usas Windows
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+#pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 TOKEN = "7894095577:AAFH9VOmINKWsv_Z57tcgVrhHw--Y4pLovU"
 
