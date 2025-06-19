@@ -1,92 +1,76 @@
+import os
 import logging
 import re
-import os
-import sys
+import io
+import asyncio
 from telegram import Update, Bot
-from telegram.error import Conflict
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
+from fastapi import FastAPI
+import uvicorn
 from PIL import Image
 import pytesseract
-import io
 
+# --- Configuración ---
+TOKEN = os.environ["BOT_TOKEN"]
+TARGET_GROUP_ID = int(os.environ.get("TARGET_GROUP_ID", "-1002565451607"))
+PORT = int(os.environ.get("PORT", 8000))  # Render asigna el puerto automáticamente
 
-# SOLO PARA WINDOWS: Descomenta la siguiente línea si usas Windows
-#pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+# Crear app FastAPI para health checks
+health_app = FastAPI()
 
-# Obtener el token de una variable de entorno
-TOKEN = os.environ.get("TOKEN", "7894095577:AAFH9VOmINKWsv_Z57tcgVrhHw--Y4pLovU")
+@health_app.get("/")
+async def health_check():
+    return {"status": "ok", "service": "Telegram OCR Bot"}
 
-# Variable para almacenar el ID del grupo destino
-TARGET_GROUP_ID = -1002565451607
+# --- Funciones del bot ---
 
-# ----- SOLUCIÓN PARA CONFLICTOS -----
-def clear_webhook(token):
-    try:
-        bot = Bot(token=token)
-        bot.delete_webhook(drop_pending_updates=True)
-        logging.info("✅ Webhook eliminado y actualizaciones pendientes descartadas")
-    except Exception as e:
-        logging.error(f"⚠️ Error al eliminar webhook: {e}")
-
-def handle_conflict(update, context):
-    if isinstance(context.error, Conflict):
-        logging.critical("🔴 CONFLICTO: Otra instancia del bot está ejecutándose. Cerrando...")
-        sys.exit(1)
-# -----------------------------------
+async def clear_telegram_state(token: str):
+    bot = Bot(token=token)
+    await bot.delete_webhook(drop_pending_updates=True)
+    logging.info("✅ Webhook eliminado y pendientes descartados")
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Descargar la imagen
+        # Descargar imagen
         photo_file = await update.message.photo[-1].get_file()
         image_bytes = await photo_file.download_as_bytearray()
-        
-        # Convertir bytes a imagen
         image = Image.open(io.BytesIO(image_bytes))
         
-        # Aplicar OCR (español e inglés)
+        # OCR
         text = pytesseract.image_to_string(image, lang='eng+spa')
         
-        # Verificar si el texto contiene "duolingo" o "dwolingo"
+        # Verificar si es imagen de Duolingo
         if not re.search(r'\b(duolingo|dwolingo)\b', text, re.IGNORECASE):
             return
         
-        # Filtrar "duolingo" y "dwolingo"
-        filtered_text = re.sub(
-            r'\b(duolingo|dwolingo)\b', 
-            '', 
-            text, 
-            flags=re.IGNORECASE
-        )
-        
-        # Limpiar espacios extras y líneas vacías
+        # Filtrar "duolingo"
+        filtered_text = re.sub(r'\b(duolingo|dwolingo)\b', '', text, flags=re.IGNORECASE)
         cleaned_lines = [line.strip() for line in filtered_text.splitlines() if line.strip()]
         cleaned_text = '\n'.join(cleaned_lines)
         
-        # Verificar si queda texto después del filtrado
         if not cleaned_text.strip():
             return
         
-        # Dividir en frases inglés y español
+        # Extraer frases
         english_phrase = ""
         spanish_phrase = ""
         
-        # Buscar la primera frase (inglés)
-        english_match = re.search(r'^(.+?[.!?])', cleaned_text, re.DOTALL)
-        if english_match:
-            english_phrase = english_match.group(1).strip()
-            spanish_text = cleaned_text[english_match.end():].strip()
-            spanish_match = re.search(r'^([¿¡]?.+?[.!?]?)$', spanish_text, re.DOTALL)
-            if spanish_match:
-                spanish_phrase = spanish_match.group(1).strip()
+        # Intento 1: Buscar frase inglesa con puntuación final
+        match_eng = re.search(r'^(.+?[.!?])', cleaned_text, re.DOTALL)
+        if match_eng:
+            english_phrase = match_eng.group(1).strip()
+            rest_text = cleaned_text[match_eng.end():].strip()
+            match_esp = re.search(r'^([¿¡]?.+?[.!?]?)$', rest_text, re.DOTALL)
+            if match_esp:
+                spanish_phrase = match_esp.group(1).strip()
         else:
+            # Intento 2: Dividir por líneas
             lines = cleaned_text.split('\n')
             if len(lines) >= 2:
-                english_phrase = lines[0]
-                spanish_phrase = lines[1]
+                english_phrase, spanish_phrase = lines[0], lines[1]
             else:
                 return
         
-        # Formatear la respuesta
         response = (
             "🇬🇧 *Frase en inglés:*\n"
             f"{english_phrase}\n\n"
@@ -94,10 +78,8 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{spanish_phrase}"
         )
         
-        # 1. Responder en el grupo original
         await update.message.reply_text(response, parse_mode='Markdown')
         
-        # 2. Enviar la misma respuesta al grupo adicional SI está configurado
         if TARGET_GROUP_ID:
             await context.bot.send_message(
                 chat_id=TARGET_GROUP_ID,
@@ -106,63 +88,51 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
     except Exception as e:
-        logging.error(f"Error: {e}")
-        return
+        logging.error(f"Error procesando imagen: {e}")
 
-# Nuevo comando para obtener y configurar el ID del grupo
 async def set_target_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TARGET_GROUP_ID
     chat_id = update.message.chat_id
-    
-    # Guardar el ID del grupo actual
     TARGET_GROUP_ID = chat_id
-    
-    # Confirmar al usuario
     await update.message.reply_text(
-        f"✅ ¡Grupo destino configurado correctamente!\n"
-        f"ID del grupo: `{chat_id}`\n\n"
-        "Ahora todas las transcripciones se enviarán también a este grupo.",
+        f"✅ Grupo destino configurado: `{chat_id}`",
         parse_mode='Markdown'
     )
-    
-    # Mostrar en consola para que puedas copiarlo
-    print("\n" + "="*50)
-    print(f"ID DEL GRUPO DESTINO: {chat_id}")
-    print("="*50 + "\n")
-    
-    # Sugerencia para configurar permanente
-    await update.message.reply_text(
-        "💡 **Para hacer esta configuración permanente:**\n"
-        "1. Copia el ID mostrado arriba\n"
-        "2. Ábre tu código Python\n"
-        "3. Busca la línea: `TARGET_GROUP_ID = None`\n"
-        "4. Cámbiala por: `TARGET_GROUP_ID = TU_ID_AQUI`\n"
-        "5. Guarda y reinicia el bot",
-        parse_mode='Markdown'
-    )
+    logging.info(f"Grupo destino actualizado: {chat_id}")
 
-def main():
-    # 1. Eliminar webhooks previos
-    clear_webhook(TOKEN)
+async def run_bot():
+    """Inicia el bot de Telegram en modo polling."""
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+    await clear_telegram_state(TOKEN)
     
-    # Configurar logging
-    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-    
-    # Crear la aplicación
     application = Application.builder().token(TOKEN).build()
-    
-    # 4. Manejador de errores para conflictos
-    application.add_error_handler(handle_conflict)
-    
-    # Manejador para imágenes
     application.add_handler(MessageHandler(filters.PHOTO, handle_image))
-    
-    # Manejador para el comando /setgroup
     application.add_handler(CommandHandler("setgroup", set_target_group))
     
-    # Iniciar el bot en modo polling
-    logging.info("Bot iniciado...")
-    application.run_polling()
+    logging.info("Bot de Telegram iniciado en modo polling")
+    await application.run_polling()
+
+async def run_health_server():
+    """Inicia el servidor HTTP para health checks."""
+    config = uvicorn.Config(
+        app=health_app,
+        host="0.0.0.0",
+        port=PORT,
+        log_level="info"
+    )
+    server = uvicorn.Server(config)
+    logging.info(f"Servidor de salud iniciado en puerto {PORT}")
+    await server.serve()
+
+async def main():
+    """Función principal que ejecuta ambas tareas simultáneamente."""
+    await asyncio.gather(
+        run_health_server(),
+        run_bot()
+    )
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
